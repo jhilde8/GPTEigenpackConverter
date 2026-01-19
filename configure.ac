@@ -1,0 +1,102 @@
+AC_PREREQ([2.69])
+AC_INIT([GPTEigenpackConverter], [0.1], [Ryan.Hill@ed.ac.uk])
+AC_CANONICAL_BUILD
+AC_CANONICAL_HOST
+AC_CANONICAL_TARGET
+AC_CONFIG_SRCDIR([main.cpp])
+AC_CONFIG_MACRO_DIR([.buildutils/m4])
+AC_CONFIG_HEADERS([config.h])
+AM_INIT_AUTOMAKE([-Wall -Werror foreign subdir-objects])
+m4_ifdef([AM_SILENT_RULES],[AM_SILENT_RULES([yes])])
+
+# Checks for programs.
+AC_PROG_CXX
+AC_PROG_CC
+AC_PROG_RANLIB
+AM_PROG_AR
+AC_LANG([C++])
+
+########### HADRONS #############
+AC_ARG_WITH([hadrons],
+    [AS_HELP_STRING([--with-hadrons=<prefix>],
+    [try this for a non-standard install prefix of Hadrons])],
+    [PATH="$with_hadrons/bin$PATH_SEPARATOR$PATH"]
+    [CXXFLAGS="$CXXFLAGS -I$with_hadrons/include"]
+    [LDFLAGS="$LDFLAGS -L$with_hadrons/lib"])
+AC_CHECK_PROG([HADCONF],[hadrons-config],[yes])
+if test x"$HADCONF" != x"yes" ; then
+    AC_MSG_ERROR([hadrons-config not found])
+fi
+########### GRID #############
+AC_ARG_WITH([grid],
+    [AS_HELP_STRING([--with-grid=<prefix>],
+    [try this for a non-standard install prefix of Grid])],
+    [PATH="$with_grid/bin$PATH_SEPARATOR$PATH"]
+    [CXXFLAGS="$CXXFLAGS -I$with_grid/include"]
+    [LDFLAGS="$LDFLAGS -L$with_grid/lib"])
+CXXFLAGS="$CXXFLAGS `hadrons-config --cxxflags`"
+LDFLAGS="$LDFLAGS `hadrons-config --ldflags`"
+CXXFLAGS="$AM_CXXFLAGS $CXXFLAGS"
+LDFLAGS="$AM_LDFLAGS $LDFLAGS"
+LIBS=" -lHadrons $LIBS `hadrons-config --libs`"
+
+
+########### NUM BASIS VECTORS #############
+AC_ARG_VAR([nbasis],
+    [Sets the number of basis vectors.])
+########### CONC. BASIS VECTORS #############
+AC_ARG_VAR([concbasis],
+    [Sets the number of basis vectors simultaneously processed.])
+########### CONC. EIGEN VECTORS #############
+AC_ARG_VAR([conceigen],
+    [Sets the number of coarse eigenvectors simultaneously processed.])
+
+########### CHECK THAT VECTOR SETTINGS WERE ALL PASSED ###########
+if test "x${nbasis}" != "x"; then
+    AC_DEFINE_UNQUOTED([NUM_BASIS_VECTORS], [$nbasis], [Number of Basis Vectors.])
+else
+    AC_MSG_ERROR([No value for 'nbasis' configure option provided. Provide the number of Basis Vectors.])
+fi
+
+if test "x${concbasis}" != "x"; then
+    AC_DEFINE_UNQUOTED([MAX_CONCURRENT_BASIS_VECTORS], [$concbasis], [Number of batch-processed Basis Vectors.])
+else
+    AC_MSG_ERROR([No value for 'concbasis' configure option provided. Provide the number of batch-processed Basis Vectors.])
+fi
+
+if test "x${conceigen}" != "x"; then
+    AC_DEFINE_UNQUOTED([MAX_CONCURRENT_EIGEN_VECTORS], [$conceigen], [Number of batch-processed Eigenvectors.])
+else
+    AC_MSG_ERROR([No value for 'conceigen' configure option provided. Provide the number of batch-processed Eigenvectors.])
+fi
+
+############ CHECKS
+
+AC_MSG_CHECKING([that a minimal Grid/Hadrons program compiles]);
+AC_LINK_IFELSE(
+        [AC_LANG_SOURCE([[
+    #include <Grid/Grid.h>
+    #include <Hadrons/Application.hpp>
+
+    using namespace Grid;
+    using namespace Hadrons;
+
+    int main(int argc, char *argv[])
+    {
+        Grid_init(&argc, &argv);
+        Grid_finalize();
+        Application application;
+        application.run();
+
+        return 0;
+    }
+
+    ]])],
+        [AC_MSG_RESULT([yes])],
+    [AC_MSG_RESULT([no])]
+    [AC_MSG_ERROR([Could not compile a minimal Hadrons program])])
+
+AC_SUBST([AM_CXXFLAGS])
+AC_SUBST([AM_LDFLAGS])
+AC_CONFIG_FILES([Makefile])
+AC_OUTPUT
