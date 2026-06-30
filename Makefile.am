@@ -13,5 +13,6 @@ GPTEigenpackConverter_SOURCES = main.cpp                                     \
                                 EigenpackReader/Metadata/MetadataStructs.cpp \
                                 EigenpackReader/Validation/BasicBinary.cpp   \
                                 Utils/FP16.cpp                               \
-                                Utils/StringManip.cpp
+                                Utils/StringManip.cpp                        \
+                                Utils/ZipReader.cpp
 

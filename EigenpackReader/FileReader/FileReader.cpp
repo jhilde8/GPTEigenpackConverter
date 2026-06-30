@@ -8,9 +8,14 @@
 // RAII Constructor / Destructor
 // fstream is RAII anyway?
 FileReader::FileReader(Count_t file_idx, const std::string& filepath, const Metadata& metadata)
+    : FileReader(file_idx, filepath, 0, metadata)
+{}
+
+FileReader::FileReader(Count_t file_idx, const std::string& filepath, Offset_t base_offset, const Metadata& metadata)
     : metadata    { metadata }
     , file_idx    { file_idx }
     , filepath    { filepath }
+    , base_offset { base_offset }
     , fine_origin { metadata.getFirstLatticeSiteOfFile(file_idx) }
     , block_origin{ metadata.getFirstCoarseSiteOfFile(file_idx) }
     , fp32_buffer_size { metadata.fp32_sizes.basis_vector_size }
@@ -29,6 +34,7 @@ FileReader::FileReader(const FileReader& fr)
     : metadata     { fr.metadata }
     , file_idx     { fr.file_idx }
     , filepath     { fr.filepath }
+    , base_offset  { fr.base_offset }
     , fine_origin  { fr.fine_origin }
     , block_origin { fr.block_origin }
     , fp32_buffer_size { fr.fp32_buffer_size }
@@ -94,7 +100,7 @@ FileReader::Fermion_t FileReader::readNextLatticeFermionFP32()
 // readLatticeFermionFP32At
 FileReader::Fermion_t FileReader::readLatticeFermionFP32At(Offset_t offset)
 {
-    this->bytestream.seekg(offset);
+    this->bytestream.seekg(this->base_offset + offset);
     return this->readNextLatticeFermionFP32();
 }
 
@@ -118,7 +124,7 @@ FileReader::Fermion_t FileReader::readLatticeFermionFP32AtLatticeSite(const Dime
 void FileReader::seekToFP32BlockBasisVector(Count_t block_idx, Count_t which_basis_vector)
 {
     auto offset = this->metadata.getFP32BlockBasisVectorOffset(block_idx, which_basis_vector);
-    this->bytestream.seekg(offset);
+    this->bytestream.seekg(this->base_offset + offset);
 }
 
 // ################### //
@@ -167,7 +173,7 @@ FileReader::Fermion_t FileReader::readNextLatticeFermionFP16()
 // readLatticeFermionFP16At
 FileReader::Fermion_t FileReader::readLatticeFermionFP16At(Offset_t offset)
 {
-    this->bytestream.seekg(offset);
+    this->bytestream.seekg(this->base_offset + offset);
     return this->readNextLatticeFermionFP16();
 }
 
@@ -191,7 +197,7 @@ FileReader::Fermion_t FileReader::readLatticeFermionFP16AtLatticeSite(const Dime
 void FileReader::seekToFP16BlockBasisVector(Count_t block_idx, Count_t which_basis_vector)
 {
     auto offset = this->metadata.getFP16BlockBasisVectorOffset(block_idx, which_basis_vector);
-    this->bytestream.seekg(offset);
+    this->bytestream.seekg(this->base_offset + offset);
 }
 
 // ################### //
@@ -235,7 +241,7 @@ std::vector<float> FileReader::readNextCoarseEigenvector()
 
 std::vector<float> FileReader::readCoarseEigenvectorAt(Offset_t offset)
 {
-    this->bytestream.seekg(offset);
+    this->bytestream.seekg(this->base_offset + offset);
     return this->readNextCoarseEigenvector();
 }
 
@@ -265,7 +271,7 @@ std::vector<float> FileReader::readCoarseEigenvectorAtCoarseSite(const Dimension
 void FileReader::seekToCoarseEigenvector(Count_t which_eigenvector)
 {
     auto offset = this->metadata.getCoarseEigenvectorOffset(which_eigenvector, 0);
-    this->bytestream.seekg(offset);
+    this->bytestream.seekg(this->base_offset + offset);
 }
 
 // ##### //

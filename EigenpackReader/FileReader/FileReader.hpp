@@ -24,11 +24,13 @@ public:
     const Metadata& metadata;
     const Count_t file_idx;
     const std::string filepath;
+    const Offset_t base_offset;
     const Dimensions fine_origin;
     const Dimensions block_origin;
 
     // C/Dtors
     FileReader(Count_t file_idx, const std::string& filepath, const Metadata& metadata);
+    FileReader(Count_t file_idx, const std::string& filepath, Offset_t base_offset, const Metadata& metadata);
     ~FileReader();
     FileReader(const FileReader& fr);
 
