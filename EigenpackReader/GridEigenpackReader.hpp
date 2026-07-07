@@ -3,7 +3,7 @@
 #include <Grid/Grid.h>
 #include <Hadrons/Application.hpp>
 #include <Hadrons/EigenPack.hpp>
-
+#include "Eigenvalues/Eigenvalues.hpp"
 #include "EigenpackReaderBase.hpp"
 #include "Validation/BasicBinary.hpp"
 
@@ -276,7 +276,7 @@ void GridEigenpackReader<NUM_BASIS_VECTORS, NUM_CONCURRENT_BASIS_VECTORS, NUM_CO
                 for (int batch_vector=0; batch_vector < NUM_CONCURRENT_BASIS_VECTORS; ++batch_vector)
                 {
                     total_registereval_time -= usecond();
-                    eigenpack.eval[batch_vector] = fine_eigenvalues[batch_vector + start_vector];
+                    eigenpack.eval[batch_vector] = fine_eigenvalues[batch_vector + start_vector + initial_vector];
                     total_registereval_time += usecond();
 
                     for (int block_site_idx=0; block_site_idx < n_sites; ++block_site_idx)
