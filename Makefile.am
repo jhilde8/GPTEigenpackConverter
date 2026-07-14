@@ -1,6 +1,6 @@
  ACLOCAL_AMFLAGS = -I .buildutils/m4
 
- bin_PROGRAMS = GPTEigenpackConverter EvalScan
+ bin_PROGRAMS = GPTEigenpackConverter EvalScan Test_converted_verify
 
 GPTEigenpackConverter_SOURCES = main.cpp                                     \
                                 EigenpackReader/EigenpackReader.cpp          \
@@ -17,4 +17,6 @@ GPTEigenpackConverter_SOURCES = main.cpp                                     \
                                 Utils/ZipReader.cpp
 
 EvalScan_SOURCES = EvalScan.cpp
+
+Test_converted_verify_SOURCES = tests/Test_converted_verify.cpp
 
