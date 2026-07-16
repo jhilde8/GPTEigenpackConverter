@@ -18,12 +18,16 @@
  * the same --grid argument the converter was run with.
  *
  * Checks that each loaded vector is an approximate eigenvector of
- * Mpc^dag Mpc (SchurDiagTwoOperator, Hadrons' default Schur convention --
- * matches par.CGl.*.xml's RBPrecCG/ExactDeflation), exactly as
- * LocalCoherenceLanczos::testFine() checks right after a real Lanczos run
- * (Grid/algorithms/iterative/LocalCoherenceLanczos.h:347-356). Reuses the
- * same ImplicitlyRestartedLanczosHermOpTester, so the residual math matches
- * production's own Lanczos convergence test bit for bit.
+ * Mpc^dag Mpc, exactly as LocalCoherenceLanczos::testFine() checks right
+ * after a real Lanczos run (Grid/algorithms/iterative/LocalCoherenceLanczos.h:
+ * 347-356). Reuses the same ImplicitlyRestartedLanczosHermOpTester, so the
+ * residual math matches production's own Lanczos convergence test bit for
+ * bit. --schur selects which Schur convention Mpc is built from
+ * (SchurDiagTwoOperator, Hadrons' default -- matches par.CGl.*.xml's
+ * RBPrecCG/ExactDeflation as of this writing -- or SchurDiagOneOperator,
+ * matching GPT's schur_complement_one); default is diagtwo. If the
+ * eigenpack passes under one convention and not the other, that identifies
+ * which convention GPT's Lanczos actually used to generate it.
  *
  * Motivation: production a2a solves show a very bad deflation guess -- CG
  * barely moves off its undeflated trajectory in 400 inner iterations. The
@@ -37,7 +41,7 @@
  *   ./Test_converted_verify --grid 64.64.64.128 --mpi 4.4.4.4 \
  *       --gauge /path/to/ckpoint_lat \
  *       --filestem /path/to/converted/vec \
- *       --traj 1500 --nCheck 5 --resid 1e-3
+ *       --traj 1500 --nCheck 5 --resid 1e-3 --schur diagtwo
  *
  * A vector that's intact should reconstruct an eigenvalue close to the
  * stored one and pass the residual target; loosen/tighten --resid to
@@ -52,6 +56,49 @@
 using namespace Grid;
 using namespace Hadrons;
 
+// Runs the Mpc^dag Mpc residual check for a given Schur convention (SchurOp
+// is SchurDiagOneOperator<MobiusFermionF, LatticeFermionF> or
+// SchurDiagTwoOperator<...>). Returns the number of vectors that failed.
+template <typename SchurOp>
+unsigned int checkVectors(MobiusFermionF &Ddwf, Hadrons::FermionEigenPack<FIMPLF> &epack,
+                          unsigned int nCheck, double resid, const std::string &label)
+{
+    SchurOp                                                 schurOp(Ddwf);
+    PlainHermOp<LatticeFermionF>                            hermOp(schurOp);
+    ImplicitlyRestartedLanczosHermOpTester<LatticeFermionF> tester(hermOp);
+    unsigned int                                            nFail = 0;
+
+    std::cout << GridLogMessage << "Checking " << nCheck
+              << " fine basis vector(s) against Mpc^dag Mpc (" << label << "), "
+              << "target residual " << resid << std::endl;
+
+    for (unsigned int k = 0; k < nCheck; ++k)
+    {
+        RealD evalStored = epack.eval[k];
+        RealD evalRecon  = evalStored;
+        int   conv       = tester.TestConvergence(k, resid, epack.evec[k], evalRecon, 1.0);
+        RealD relDiff    = (evalStored != 0.)
+                          ? std::abs(evalRecon - evalStored) / std::abs(evalStored)
+                          : std::abs(evalRecon - evalStored);
+
+        std::cout << GridLogMessage << "  evec " << k
+                  << ": stored eval = "        << evalStored
+                  << ", reconstructed eval = " << evalRecon
+                  << ", rel eval diff = "      << relDiff
+                  << (conv ? "  [OK]" : "  [FAIL]") << std::endl;
+
+        if (!conv)
+        {
+            ++nFail;
+        }
+    }
+
+    std::cout << GridLogMessage << nFail << " / " << nCheck
+              << " fine basis vectors FAILED the residual check (" << label << ")" << std::endl;
+
+    return nFail;
+}
+
 int main(int argc, char *argv[])
 {
     std::string  gaugeFile = "";
@@ -60,6 +107,7 @@ int main(int argc, char *argv[])
     unsigned int nCheck    = 5;
     double       resid     = 1e-3;
     unsigned int Ls        = 12;
+    std::string  schurConv = "diagtwo";
 
     if (GridCmdOptionExists(argv, argv + argc, "--gauge"))
         gaugeFile = GridCmdOptionPayload(argv, argv + argc, "--gauge");
@@ -73,13 +121,17 @@ int main(int argc, char *argv[])
         resid = std::stod(GridCmdOptionPayload(argv, argv + argc, "--resid"));
     if (GridCmdOptionExists(argv, argv + argc, "--Ls"))
         Ls = std::stoi(GridCmdOptionPayload(argv, argv + argc, "--Ls"));
+    if (GridCmdOptionExists(argv, argv + argc, "--schur"))
+        schurConv = GridCmdOptionPayload(argv, argv + argc, "--schur");
 
-    if (gaugeFile.empty() || filestem.empty())
+    if (gaugeFile.empty() || filestem.empty()
+        || (schurConv != "diagone" && schurConv != "diagtwo"))
     {
         std::cerr << "Usage: " << argv[0]
                   << " --grid X.Y.Z.T --mpi x.y.z.t"
                   << " --gauge <config> --filestem <converter filestem, no _fine suffix>"
-                  << " [--traj N] [--nCheck N] [--resid X] [--Ls N]" << std::endl;
+                  << " [--traj N] [--nCheck N] [--resid X] [--Ls N]"
+                  << " [--schur diagone|diagtwo]" << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -122,10 +174,6 @@ int main(int argc, char *argv[])
     implParams.twist_n_2pi_L   = {0., 0., 0., 0.};
     MobiusFermionF Ddwf(UmuF, *FGridF, *FrbGridF, *UGridF, *UrbGridF, mass, M5, b, c, implParams);
 
-    SchurDiagTwoOperator<MobiusFermionF, LatticeFermionF>   schurOp(Ddwf);
-    PlainHermOp<LatticeFermionF>                            hermOp(schurOp);
-    ImplicitlyRestartedLanczosHermOpTester<LatticeFermionF> tester(hermOp);
-
     // ------------------------------------------------------------------
     // Fine basis vectors ONLY -- points straight at "<filestem>_fine", the
     // exact file CoarseEigenPack::readFine() would read. Loads only the
@@ -135,35 +183,18 @@ int main(int argc, char *argv[])
     Hadrons::FermionEigenPack<FIMPLF> epack(nCheck, FrbGridF);
     epack.read(filestem + "_fine", true, traj);
 
-    unsigned int nFail = 0;
+    unsigned int nFail;
 
-    std::cout << GridLogMessage << "Checking " << nCheck
-              << " fine basis vector(s) against Mpc^dag Mpc (SchurDiagTwoOperator), "
-              << "target residual " << resid << std::endl;
-
-    for (unsigned int k = 0; k < nCheck; ++k)
+    if (schurConv == "diagone")
     {
-        RealD evalStored = epack.eval[k];
-        RealD evalRecon  = evalStored;
-        int   conv       = tester.TestConvergence(k, resid, epack.evec[k], evalRecon, 1.0);
-        RealD relDiff    = (evalStored != 0.)
-                          ? std::abs(evalRecon - evalStored) / std::abs(evalStored)
-                          : std::abs(evalRecon - evalStored);
-
-        std::cout << GridLogMessage << "  evec " << k
-                  << ": stored eval = "        << evalStored
-                  << ", reconstructed eval = " << evalRecon
-                  << ", rel eval diff = "      << relDiff
-                  << (conv ? "  [OK]" : "  [FAIL]") << std::endl;
-
-        if (!conv)
-        {
-            ++nFail;
-        }
+        nFail = checkVectors<SchurDiagOneOperator<MobiusFermionF, LatticeFermionF>>(
+            Ddwf, epack, nCheck, resid, "SchurDiagOneOperator");
     }
-
-    std::cout << GridLogMessage << nFail << " / " << nCheck
-              << " fine basis vectors FAILED the residual check" << std::endl;
+    else
+    {
+        nFail = checkVectors<SchurDiagTwoOperator<MobiusFermionF, LatticeFermionF>>(
+            Ddwf, epack, nCheck, resid, "SchurDiagTwoOperator");
+    }
 
     Grid_finalize();
 
