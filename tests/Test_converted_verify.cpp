@@ -177,7 +177,8 @@ int main(int argc, char *argv[])
     // zmdwf_l block (14 complex omega coefficients, one per Ls slice).
     // ------------------------------------------------------------------
     RealD              mass, M5, b, c;
-    std::vector<Real>  boundary, twist;
+    AcceleratorVector<Complex, Nd> boundary;
+    AcceleratorVector<Real, Nd>    twist;
     std::vector<ComplexD> omega; // only used for ens == 48i
 
     if (ens == "48i")
