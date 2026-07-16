@@ -188,8 +188,8 @@ int main(int argc, char *argv[])
         M5       = 1.8;
         b        = 1.0;
         c        = 0.0;
-        boundary = {1., 1., 1., 1.};
-        twist    = {0., 0., 0., 0.};
+        boundary = std::vector<Complex>{1., 1., 1., 1.};
+        twist    = std::vector<Real>{0., 0., 0., 0.};
         omega    = {
             ComplexD(1.4789834351796358e+00, -0.000000000000000e+00),
             ComplexD(1.347049274947458e+00,  -0.000000000000000e+00),
@@ -217,8 +217,8 @@ int main(int argc, char *argv[])
         M5       = 1.8;
         b        = 1.5;
         c        = 0.5;
-        boundary = {1., 1., 1., -1.};
-        twist    = {0., 0., 0., 0.};
+        boundary = std::vector<Complex>{1., 1., 1., -1.};
+        twist    = std::vector<Real>{0., 0., 0., 0.};
     }
 
     // ------------------------------------------------------------------
