@@ -35,9 +35,9 @@
  * matching GPT's schur_complement_one); default is diagtwo.
  *
  * --ens selects which ensemble's action parameters to build Mpc from:
- *   - 64i (default): standard Mobius, mass/M5/b/c/Ls/boundary/twist taken
+ *   - 64I (default): standard Mobius, mass/M5/b/c/Ls/boundary/twist taken
  *     from par.CGl.1500.xml's mdwf_l/mdwff_l (b=1.5, c=0.5, Ls=12).
- *   - 48i: z-Mobius (MAction::ZMobiusDWF in production), mass/M5/b/c/omega/
+ *   - 48I: z-Mobius (MAction::ZMobiusDWF in production), mass/M5/b/c/omega/
  *     Ls/boundary/twist taken from the 48I zmdwf_l XML block (b=1.0, c=0.0,
  *     Ls=14, 14 complex omega coefficients). Used as a control: 48I is a
  *     working, already-validated production ensemble, so if this same test
@@ -45,7 +45,7 @@
  *     64I failure to something about that specific converted pack (or its
  *     conversion) rather than a bug in this test itself.
  * --gauge/--filestem/--traj/--grid/--mpi/--Ls remain independent of --ens
- * (Ls defaults to the ensemble's own value -- 12 for 64i, 14 for 48i -- but
+ * (Ls defaults to the ensemble's own value -- 12 for 64I, 14 for 48I -- but
  * --Ls still overrides either). Note b=1.0,c=0.0 on 48I (b+c=1) does not
  * match the commonly-quoted "b+c=2" standard some 64I documentation also
  * cites for b=1.5,c=0.5 -- i.e. the documented "standard" b+c does not
@@ -68,7 +68,7 @@
  *   ./Test_converted_verify --grid 64.64.64.128 --mpi 4.4.4.4 \
  *       --gauge /path/to/ckpoint_lat \
  *       --filestem /path/to/converted/vec \
- *       --traj 1500 --nCheck 5 --resid 1e-3 --schur diagtwo --ens 64i
+ *       --traj 1500 --nCheck 5 --resid 1e-3 --schur diagtwo --ens 64I
  *
  * A vector that's intact should reconstruct an eigenvalue close to the
  * stored one and pass the residual target; loosen/tighten --resid to
@@ -137,7 +137,7 @@ int main(int argc, char *argv[])
     double       resid     = 1e-3;
     unsigned int Ls        = 0; // 0 = "use the --ens default", set below
     std::string  schurConv = "diagtwo";
-    std::string  ens       = "64i";
+    std::string  ens       = "64I";
 
     if (GridCmdOptionExists(argv, argv + argc, "--gauge"))
         gaugeFile = GridCmdOptionPayload(argv, argv + argc, "--gauge");
@@ -158,13 +158,13 @@ int main(int argc, char *argv[])
 
     if (gaugeFile.empty() || filestem.empty()
         || (schurConv != "diagone" && schurConv != "diagtwo")
-        || (ens != "64i" && ens != "48i"))
+        || (ens != "64I" && ens != "48I"))
     {
         std::cerr << "Usage: " << argv[0]
                   << " --grid X.Y.Z.T --mpi x.y.z.t"
                   << " --gauge <config> --filestem <converter filestem, no _fine suffix>"
                   << " [--traj N] [--nCheck N] [--resid X] [--Ls N]"
-                  << " [--schur diagone|diagtwo] [--ens 64i|48i]" << std::endl;
+                  << " [--schur diagone|diagtwo] [--ens 64I|48I]" << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -179,9 +179,9 @@ int main(int argc, char *argv[])
     RealD              mass, M5, b, c;
     AcceleratorVector<Complex, Nd> boundary;
     AcceleratorVector<Real, Nd>    twist;
-    std::vector<ComplexD> omega; // only used for ens == 48i
+    std::vector<ComplexD> omega; // only used for ens == 48I
 
-    if (ens == "48i")
+    if (ens == "48I")
     {
         if (Ls == 0) Ls = 14;
         mass     = 0.00078;
@@ -210,7 +210,7 @@ int main(int argc, char *argv[])
         // check, recorded here for when the coarse-vector check is added):
         // sizeFine=400, sizeCoarse=2000, blockSize=4.3.3.3.14.
     }
-    else // 64i
+    else if (ens == "64I")
     {
         if (Ls == 0) Ls = 12;
         mass     = 0.000678;
@@ -219,7 +219,10 @@ int main(int argc, char *argv[])
         c        = 0.5;
         boundary = std::vector<Complex>{1., 1., 1., -1.};
         twist    = std::vector<Real>{0., 0., 0., 0.};
-    }
+    } else {
+	std::cout << "Incorrect ensemble param. This test only accepts 48I and 64I." << std::endl;
+	exit(EXIT_FAILURE);
+	}
 
     // ------------------------------------------------------------------
     // Grids, straight off --grid/--mpi. Gauge is read in double precision
@@ -253,7 +256,7 @@ int main(int argc, char *argv[])
     // ------------------------------------------------------------------
     unsigned int nFail;
 
-    if (ens == "48i")
+    if (ens == "48I")
     {
         typedef typename ZMobiusFermionF::FermionField LatticeFermionZF;
 
@@ -277,7 +280,7 @@ int main(int argc, char *argv[])
                 Ddwf, epack.evec, epack.eval, nCheck, resid, "SchurDiagTwoOperator");
         }
     }
-    else // 64i
+    else if (ens == "64I")// 64I
     {
         typename MobiusFermionF::ImplParams implParams;
         implParams.boundary_phases = boundary;
