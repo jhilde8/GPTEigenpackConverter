@@ -76,7 +76,7 @@
  *   ./Test_converted_verify --grid 64.64.64.128 --mpi 4.4.4.4 \
  *       --gauge /path/to/ckpoint_lat \
  *       --filestem /path/to/converted/vec \
- *       --traj 1500 --nCheck 5 --resid 1e-3 --ens 64I
+ *       --traj 1500 --nCheck 5 --resid 1e-3 --ens 64I [--orthogonalise]
  *
  * A vector that's intact should reconstruct an eigenvalue close to the
  * stored one and pass the residual target; loosen/tighten --resid to
@@ -84,6 +84,23 @@
  * residual on a vector regardless of --resid means that reconstruction
  * simply isn't an eigenvector of this operator (corrupt read, index/
  * ordering mismatch, or a real bug in the fine or coarse data).
+ *
+ * --orthogonalise: blockPromote only reconstructs a genuine eigenvector of
+ * Mpc^dag Mpc if the fine basis vectors are orthonormal *within each coarse
+ * block* -- i.e. the map from the nBasis-dim coarse coefficient space into
+ * that block's local fine subspace is an isometry. Production
+ * (par.CGl.1500.xml's epack_coarse module, MIO::LoadCoarseFermionEigenPack200F)
+ * runs with <orthogonalise>false</orthogonalise>, i.e. it trusts the fine
+ * basis read off disk is already block-orthonormal and skips fixing it up;
+ * this test does the same by default (matches production exactly). Passing
+ * --orthogonalise runs the same two-pass block Gramm-Schmidt Hadrons applies
+ * in Hadrons::MIO::TLoadCoarseEigenPack::execute() when its orthogonalise
+ * option is true (Hadrons/Modules/MIO/LoadCoarseEigenPack.hpp:182-187) on
+ * the fine basis before promoting. If that flips FAILs to OKs, the fine
+ * basis isn't block-orthonormal as converted -- a structural bug (in
+ * generation or conversion), not an action-parameter mismatch, since
+ * re-orthogonalising is a purely geometric fix-up that can't correct for a
+ * wrong physical operator.
  */
 #include <Grid/Grid.h>
 #include <Grid/algorithms/iterative/ImplicitlyRestartedLanczos.h>
@@ -91,6 +108,13 @@
 
 using namespace Grid;
 using namespace Hadrons;
+
+// Same construction Hadrons::MIO::TLoadCoarseEigenPack uses for its
+// orthogonalise-pass scratch field (LoadCoarseEigenPack.hpp): a coarse-grid
+// complex scalar lattice, used only as blockOrthogonalise()'s inner-product
+// scratch space.
+template <typename vtype>
+using iImplScalar = iScalar<iScalar<iScalar<vtype>>>;
 
 // Runs the Mpc^dag Mpc residual check on block-promoted coarse
 // eigenvectors, for a given Schur convention (SchurOp is
@@ -102,7 +126,8 @@ using namespace Hadrons;
 template <typename SchurOp, typename FMat, typename Field, typename CoarseField>
 unsigned int checkVectors(FMat &Ddwf, std::vector<Field> &subspace,
                           std::vector<CoarseField> &evecCoarse, std::vector<RealD> &evalCoarse,
-                          unsigned int nCheck, double resid, const std::string &label)
+                          unsigned int nCheck, double resid, const std::string &label,
+                          bool orthogonalise)
 {
     SchurOp                                      schurOp(Ddwf);
     PlainHermOp<Field>                           hermOp(schurOp);
@@ -112,9 +137,27 @@ unsigned int checkVectors(FMat &Ddwf, std::vector<Field> &subspace,
 
     evec.Checkerboard() = subspace[0].Checkerboard();
 
+    if (orthogonalise)
+    {
+        // Same two-pass block Gramm-Schmidt as
+        // Hadrons::MIO::TLoadCoarseEigenPack::execute() when its
+        // orthogonalise option is true -- fixes up the fine basis in place
+        // if it isn't already block-orthonormal.
+        typedef iImplScalar<typename Field::vector_type> SiteComplex;
+
+        Lattice<SiteComplex> dummy(evecCoarse[0].Grid());
+
+        std::cout << GridLogMessage << "Block Gramm-Schmidt pass 1 (" << label << ")" << std::endl;
+        blockOrthogonalise(dummy, subspace);
+        std::cout << GridLogMessage << "Block Gramm-Schmidt pass 2 (" << label << ")" << std::endl;
+        blockOrthogonalise(dummy, subspace);
+    }
+
     std::cout << GridLogMessage << "Checking " << nCheck
               << " block-promoted coarse eigenvector(s) against Mpc^dag Mpc (" << label << "), "
-              << "target residual " << resid << std::endl;
+              << "target residual " << resid
+              << (orthogonalise ? " [fine basis re-orthogonalised]" : " [fine basis as-read, matches production]")
+              << std::endl;
 
     for (unsigned int i = 0; i < nCheck; ++i)
     {
@@ -153,6 +196,7 @@ int main(int argc, char *argv[])
     unsigned int nCheck    = 5; // number of coarse eigenvectors to promote and check
     double       resid     = 1e-3;
     std::string  ens       = "64I";
+    bool         orthogonalise = false; // matches production's default (par.CGl.1500.xml: orthogonalise=false)
 
     if (GridCmdOptionExists(argv, argv + argc, "--gauge"))
         gaugeFile = GridCmdOptionPayload(argv, argv + argc, "--gauge");
@@ -166,13 +210,15 @@ int main(int argc, char *argv[])
         resid = std::stod(GridCmdOptionPayload(argv, argv + argc, "--resid"));
     if (GridCmdOptionExists(argv, argv + argc, "--ens"))
         ens = GridCmdOptionPayload(argv, argv + argc, "--ens");
+    if (GridCmdOptionExists(argv, argv + argc, "--orthogonalise"))
+        orthogonalise = true;
 
     if (gaugeFile.empty() || filestem.empty() || (ens != "64I" && ens != "48I"))
     {
         std::cerr << "Usage: " << argv[0]
                   << " --grid X.Y.Z.T --mpi x.y.z.t"
                   << " --gauge <config> --filestem <converter filestem, no _fine/_coarse suffix>"
-                  << " [--traj N] [--nCheck N] [--resid X] [--ens 64I|48I]" << std::endl;
+                  << " [--traj N] [--nCheck N] [--resid X] [--ens 64I|48I] [--orthogonalise]" << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -190,7 +236,6 @@ int main(int argc, char *argv[])
     // ------------------------------------------------------------------
     RealD                 mass, M5, b, c;
     unsigned int          Ls;
-    std::string           schurConv;
     AcceleratorVector<Complex, Nd> boundary;
     AcceleratorVector<Real, Nd>    twist;
     std::vector<ComplexD> omega; // only used for ens == 48I
@@ -206,7 +251,6 @@ int main(int argc, char *argv[])
         c         = 0.0;
         boundary  = std::vector<Complex>{1., 1., 1., 1.};
         twist     = std::vector<Real>{0., 0., 0., 0.};
-        schurConv = "diagtwo";
         omega     = {
             ComplexD(1.4789834351796358e+00, -0.000000000000000e+00),
             ComplexD(1.347049274947458e+00,  -0.000000000000000e+00),
@@ -236,7 +280,6 @@ int main(int argc, char *argv[])
         c           = 0.5;
         boundary    = std::vector<Complex>{1., 1., 1., -1.};
         twist       = std::vector<Real>{0., 0., 0., 0.};
-        schurConv   = "diagone";
         // nBasis (sizeFine) = 200, sizeCoarse = 2000.
         blockSize4d = {4, 4, 4, 4};
         blockLs     = 12;
@@ -308,16 +351,9 @@ int main(int argc, char *argv[])
         epack.readFine(filestem, true, traj);
         epack.readCoarse(filestem, true, traj);
 
-        if (schurConv == "diagone")
-        {
-            nFail = checkVectors<SchurDiagOneOperator<ZMobiusFermionF, LatticeFermionZF>>(
-                Ddwf, epack.evec, epack.evecCoarse, epack.evalCoarse, nCheck, resid, "SchurDiagOneOperator");
-        }
-        else
-        {
-            nFail = checkVectors<SchurDiagTwoOperator<ZMobiusFermionF, LatticeFermionZF>>(
-                Ddwf, epack.evec, epack.evecCoarse, epack.evalCoarse, nCheck, resid, "SchurDiagTwoOperator");
-        }
+        // 48I is always SchurDiagTwoOperator (Hadrons' default production convention).
+        nFail = checkVectors<SchurDiagTwoOperator<ZMobiusFermionF, LatticeFermionZF>>(
+            Ddwf, epack.evec, epack.evecCoarse, epack.evalCoarse, nCheck, resid, "SchurDiagTwoOperator", orthogonalise);
     }
     else // 64I
     {
@@ -331,16 +367,9 @@ int main(int argc, char *argv[])
         epack.readFine(filestem, true, traj);
         epack.readCoarse(filestem, true, traj);
 
-        if (schurConv == "diagone")
-        {
-            nFail = checkVectors<SchurDiagOneOperator<MobiusFermionF, LatticeFermionF>>(
-                Ddwf, epack.evec, epack.evecCoarse, epack.evalCoarse, nCheck, resid, "SchurDiagOneOperator");
-        }
-        else
-        {
-            nFail = checkVectors<SchurDiagTwoOperator<MobiusFermionF, LatticeFermionF>>(
-                Ddwf, epack.evec, epack.evecCoarse, epack.evalCoarse, nCheck, resid, "SchurDiagTwoOperator");
-        }
+        // 64I is always SchurDiagOneOperator (matches GPT's schur_complement_one).
+        nFail = checkVectors<SchurDiagOneOperator<MobiusFermionF, LatticeFermionF>>(
+            Ddwf, epack.evec, epack.evecCoarse, epack.evalCoarse, nCheck, resid, "SchurDiagOneOperator", orthogonalise);
     }
 
     Grid_finalize();
