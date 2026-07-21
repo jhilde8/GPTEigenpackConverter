@@ -271,14 +271,16 @@ unsigned int checkVectors(FMat &Ddwf, std::vector<Field> &subspace,
 
 int main(int argc, char *argv[])
 {
-    std::string  gaugeFile = "";
-    std::string  filestem  = "";
-    int          traj      = -1;
-    unsigned int nCheck    = 5; // number of coarse eigenvectors to promote and check
-    double       resid     = 1e-3;
     std::string  ens       = "64I";
     bool         orthogonalise  = false; // matches production's default (par.CGl.1500.xml: orthogonalise=false)
     bool         scanDuplicates = false; // O(n^2) whole-vector duplicate scan over the fine basis, see scanForDuplicateBasisVectors()
+    std::string  gaugeFile = "/lustre/orion/phy157/world-shared/jhilde/k2pipipbc/main_64I/configs/ckpoint_lat.1500";
+    std::string  filestem  = "/lustre/orion/phy157/scratch/jhilde/64I/converted/vec";
+    int          traj      = 1500;
+    unsigned int nCheck    = 25;
+    double       resid     = 1e-5;
+    unsigned int Ls        = 12;
+    std::string  schurConv = "diagtwo";
 
     if (GridCmdOptionExists(argv, argv + argc, "--gauge"))
         gaugeFile = GridCmdOptionPayload(argv, argv + argc, "--gauge");
@@ -319,7 +321,6 @@ int main(int argc, char *argv[])
     // Hadrons' default -> SchurDiagTwoOperator.
     // ------------------------------------------------------------------
     RealD                 mass, M5, b, c;
-    unsigned int          Ls;
     AcceleratorVector<Complex, Nd> boundary;
     AcceleratorVector<Real, Nd>    twist;
     std::vector<ComplexD> omega; // only used for ens == 48I
@@ -419,6 +420,21 @@ int main(int argc, char *argv[])
     // Full fine basis (all sizeFine vectors) + first nCheck coarse
     // eigenvectors (lowest/most physically relevant).
     // ------------------------------------------------------------------
+    typename MobiusFermionF::ImplParams implParams;
+    implParams.boundary_phases = std::vector<Complex>{1., 1., 1., -1.};
+    implParams.twist_n_2pi_L   = std::vector<Real>{0., 0., 0., 0.};    
+
+    MobiusFermionF Ddwf(UmuF, *FGridF, *FrbGridF, *UGridF, *UrbGridF, mass, M5, b, c, implParams);
+
+    // ------------------------------------------------------------------
+    // Fine basis vectors ONLY -- points straight at "<filestem>_fine", the
+    // exact file CoarseEigenPack::readFine() would read. Loads only the
+    // first nCheck vectors (v0.bin upward) -- v0.bin is where the byte
+    // disagreement was found.
+    // ------------------------------------------------------------------
+    Hadrons::FermionEigenPack<FIMPLF> epack(nCheck, FrbGridF);
+    epack.read(filestem + "_fine", true, traj);
+
     unsigned int nFail;
 
     if (ens == "48I")
