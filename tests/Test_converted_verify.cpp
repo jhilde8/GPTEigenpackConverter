@@ -109,10 +109,10 @@
  * partially) linearly dependent *within that block*. This runs
  * scanForBlockDegeneracy(): a hand-instrumented single pass of the same
  * block Gramm-Schmidt --orthogonalise runs, checking after each vector's
- * projection whether *any* coarse block's post-projection norm has
- * collapsed to (near) zero, and reporting the vector index where that first
- * happens. Same O(n^2) cost as one blockOrthogonalise() pass (not an
- * additional sweep on top).
+ * projection how many coarse blocks' post-projection norm has collapsed to
+ * (near) zero, and reporting the vector index plus degenerate-block count
+ * for any vector that has at least one. Same O(n^2) cost as one
+ * blockOrthogonalise() pass (not an additional sweep on top).
  */
 #include <Grid/Grid.h>
 #include <Grid/algorithms/iterative/ImplicitlyRestartedLanczos.h>
@@ -144,10 +144,13 @@ using iImplScalar = iScalar<iScalar<iScalar<vtype>>>;
 // exactly like blockOrthogonalise() itself) -- with a check inserted right
 // where blockNormalise() would divide by each block's post-projection norm,
 // using the same local-site peek loop Lattice_reduction.h's maxLocalNorm2()
-// uses (just tracking the minimum instead of the maximum). Only one pass is
-// run (enough to find the first occurrence); Basis is mutated in place
-// exactly as the real algorithm would, since later vectors' projections
-// depend on earlier ones already being normalised.
+// uses. For any vector that hits at least one degenerate block, reports how
+// many of the coarse grid's blocks are degenerate (not just the worst one),
+// distinguishing a defect localized to a handful of blocks from one that's
+// effectively wiped out the whole vector. Only one pass is run (enough to
+// find the first occurrence); Basis is mutated in place exactly as the real
+// algorithm would, since later vectors' projections depend on earlier ones
+// already being normalised.
 template <typename vobj, typename CComplex>
 void scanForBlockDegeneracy(Lattice<CComplex> &ip, std::vector<Lattice<vobj>> &Basis, const std::string &label)
 {
@@ -170,7 +173,10 @@ void scanForBlockDegeneracy(Lattice<CComplex> &ip, std::vector<Lattice<vobj>> &B
 
         blockInnerProductD(ip, Basis[v], Basis[v]); // ip = |v|^2 per block, after projecting out 0..v-1
 
-        RealD worstLocal = std::numeric_limits<RealD>::infinity();
+        const RealD degenerateThreshold = 1e-12;
+        RealD       worstLocal          = std::numeric_limits<RealD>::infinity();
+        uint64_t    degenerateLocal     = 0;
+
         for (int l = 0; l < coarseGrid->lSites(); ++l)
         {
             Coordinate                    coor;
@@ -184,17 +190,26 @@ void scanForBlockDegeneracy(Lattice<CComplex> &ip, std::vector<Lattice<vobj>> &B
             {
                 worstLocal = r;
             }
+            if (r < degenerateThreshold)
+            {
+                ++degenerateLocal;
+            }
         }
         // No GlobalMin -- negate and reuse GlobalMax (Communicator_base.h:117).
         RealD negWorst = -worstLocal;
         coarseGrid->GlobalMax(negWorst);
         worstLocal = -negWorst;
 
-        if (worstLocal < 1e-12)
+        uint64_t degenerateGlobal = degenerateLocal;
+        coarseGrid->GlobalSum(degenerateGlobal);
+
+        if (degenerateGlobal > 0)
         {
             ++nBad;
-            std::cout << GridLogMessage << "  DEGENERATE BLOCK: " << label << " evec " << v
-                      << " has a block with |v|^2 = " << worstLocal << " after projecting out evecs 0.."
+            std::cout << GridLogMessage << "  DEGENERATE BLOCK(S): " << label << " evec " << v
+                      << " has " << degenerateGlobal << " / " << coarseGrid->gSites()
+                      << " blocks with |v|^2 < " << degenerateThreshold
+                      << " (worst = " << worstLocal << ") after projecting out evecs 0.."
                       << (v > 0 ? std::to_string(v - 1) : std::string("<none>")) << std::endl;
         }
 
