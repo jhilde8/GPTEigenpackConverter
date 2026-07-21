@@ -106,19 +106,19 @@
  * large residual) points at 0/0 in blockNormalise() -- which only happens
  * when a fine basis vector's component orthogonal to all earlier ones is
  * exactly zero in some block, i.e. two basis vectors are (at least
- * partially) linearly dependent. This runs scanForDuplicateBasisVectors()
- * first: an O(n^2) whole-lattice pairwise overlap scan (norm2/innerProduct
- * only, no block-level machinery) over the fine basis, printing any pair
- * whose normalised overlap |<u|v>|^2/(|u|^2|v|^2) is within 1e-6 of 1 --
- * i.e. any two fine "basis" vectors that are actually (near-)duplicates of
- * each other. n(n-1)/2 pairs (~19900 for 64I's 200, ~79800 for 48I's 400),
- * each a global reduction over the full fine lattice, so this is
- * significantly slower than the main check -- expect it to dominate the
- * runtime when enabled.
+ * partially) linearly dependent *within that block*. This runs
+ * scanForBlockDegeneracy(): a hand-instrumented single pass of the same
+ * block Gramm-Schmidt --orthogonalise runs, checking after each vector's
+ * projection whether *any* coarse block's post-projection norm has
+ * collapsed to (near) zero, and reporting the vector index where that first
+ * happens. Same O(n^2) cost as one blockOrthogonalise() pass (not an
+ * additional sweep on top).
  */
 #include <Grid/Grid.h>
 #include <Grid/algorithms/iterative/ImplicitlyRestartedLanczos.h>
 #include <Hadrons/EigenPack.hpp>
+
+#include <limits>
 
 using namespace Grid;
 using namespace Hadrons;
@@ -130,71 +130,80 @@ using namespace Hadrons;
 template <typename vtype>
 using iImplScalar = iScalar<iScalar<iScalar<vtype>>>;
 
-// Cheap O(n^2) whole-vector scan across all pairs of fine basis vectors for
-// near-exact duplicates. A genuine block-orthonormal LCL basis should have
-// no two vectors nearly parallel over the whole lattice; a duplicate pair
-// here is exactly what makes blockOrthogonalise() hit 0/0 in blockNormalise
-// (--orthogonalise's NaN), and is consistent with EvalScan's "50 duplicate
-// pairs out of 200" on the fine section's eval[] field -- this checks the
-// actual vector *data*, not eigenvalue metadata, using only whole-lattice
-// norm2/innerProduct (no new block-level machinery, to keep this safe to
-// run without a local build to check against). Flags pairs whose global
-// normalised overlap |<u|v>|^2/(|u|^2|v|^2) is within 1e-6 of 1.
-template <typename Field>
-void scanForDuplicateBasisVectors(std::vector<Field> &subspace, const std::string &label)
+// blockNormalise()'s divide-by-zero (what --orthogonalise's NaN comes from)
+// is a *per-block* condition, not a whole-lattice one: a vector can be
+// linearly dependent on earlier vectors within a single coarse block (e.g.
+// from a localized data-aliasing bug during conversion) while looking
+// completely distinct everywhere else on the lattice, invisible to a
+// whole-lattice inner product.
+//
+// This reimplements blockOrthonormalize()'s Gram-Schmidt loop
+// (Grid/lattice/Lattice_transfer.h:573-596) by hand -- same sequence of
+// calls (blockInnerProductD / blockZAXPY / blockNormalise), same signature
+// convention (Lattice<CComplex> &ip scratch field, deduced from the caller,
+// exactly like blockOrthogonalise() itself) -- with a check inserted right
+// where blockNormalise() would divide by each block's post-projection norm,
+// using the same local-site peek loop Lattice_reduction.h's maxLocalNorm2()
+// uses (just tracking the minimum instead of the maximum). Only one pass is
+// run (enough to find the first occurrence); Basis is mutated in place
+// exactly as the real algorithm would, since later vectors' projections
+// depend on earlier ones already being normalised.
+template <typename vobj, typename CComplex>
+void scanForBlockDegeneracy(Lattice<CComplex> &ip, std::vector<Lattice<vobj>> &Basis, const std::string &label)
 {
-    unsigned int        n = subspace.size();
-    std::vector<RealD>  normSq(n);
+    unsigned int nbasis     = Basis.size();
+    GridBase    *coarseGrid = ip.Grid();
+    unsigned int nBad       = 0;
 
-    for (unsigned int i = 0; i < n; ++i)
+    std::cout << GridLogMessage << "Running instrumented block Gramm-Schmidt on " << nbasis
+              << " " << label << " basis vectors (single pass), checking for degenerate blocks..."
+              << std::endl;
+
+    for (unsigned int v = 0; v < nbasis; ++v)
     {
-        normSq[i] = norm2(subspace[i]);
-    }
-
-    const RealD  threshold = 1. - 1e-6; // flag pairs closer to parallel than this
-    unsigned int nPairs = 0, nFlagged = 0;
-
-    std::cout << GridLogMessage << "Scanning " << n << " " << label
-              << " basis vectors for near-duplicates (" << (n * (n - 1)) / 2
-              << " pairs)..." << std::endl;
-
-    for (unsigned int u = 0; u < n; ++u)
-    {
-        for (unsigned int v = u + 1; v < n; ++v)
+        for (unsigned int u = 0; u < v; ++u)
         {
-            ++nPairs;
+            blockInnerProductD(ip, Basis[u], Basis[v]);
+            ip = -ip;
+            blockZAXPY(Basis[v], ip, Basis[u], Basis[v]);
+        }
 
-            RealD denom = normSq[u] * normSq[v];
-            if (denom == 0.)
+        blockInnerProductD(ip, Basis[v], Basis[v]); // ip = |v|^2 per block, after projecting out 0..v-1
+
+        RealD worstLocal = std::numeric_limits<RealD>::infinity();
+        for (int l = 0; l < coarseGrid->lSites(); ++l)
+        {
+            Coordinate                    coor;
+            typename CComplex::scalar_object val;
+
+            coarseGrid->LocalIndexToLocalCoor(l, coor);
+            peekLocalSite(val, ip, coor);
+
+            RealD r = real(TensorRemove(val));
+            if (r < worstLocal)
             {
-                continue;
-            }
-
-            ComplexD ip      = innerProduct(subspace[u], subspace[v]);
-            RealD    ipMagSq = ip.real() * ip.real() + ip.imag() * ip.imag();
-            RealD    overlap = ipMagSq / denom;
-
-            if (overlap > threshold)
-            {
-                ++nFlagged;
-
-                // Confirm/quantify with a direct difference: sign/phase of a
-                // genuine duplicate could come back +evec or -evec, so try both.
-                RealD diffNorm = std::min(norm2(subspace[u] - subspace[v]),
-                                           norm2(subspace[u] + subspace[v]));
-                RealD relDiff  = diffNorm / (normSq[u] + normSq[v]);
-
-                std::cout << GridLogMessage << "  DUPLICATE CANDIDATE: " << label
-                          << " evec " << u << " vs " << v
-                          << ": global overlap |<u|v>|^2/(|u|^2|v|^2) = " << overlap
-                          << ", relative difference = " << relDiff << std::endl;
+                worstLocal = r;
             }
         }
+        // No GlobalMin -- negate and reuse GlobalMax (Communicator_base.h:117).
+        RealD negWorst = -worstLocal;
+        coarseGrid->GlobalMax(negWorst);
+        worstLocal = -negWorst;
+
+        if (worstLocal < 1e-12)
+        {
+            ++nBad;
+            std::cout << GridLogMessage << "  DEGENERATE BLOCK: " << label << " evec " << v
+                      << " has a block with |v|^2 = " << worstLocal << " after projecting out evecs 0.."
+                      << (v > 0 ? std::to_string(v - 1) : std::string("<none>")) << std::endl;
+        }
+
+        blockNormalise(ip, Basis[v]);
     }
 
-    std::cout << GridLogMessage << nFlagged << " / " << nPairs << " " << label
-              << " basis-vector pairs flagged as near-duplicates (overlap > "
-              << threshold << ")" << std::endl;
+    std::cout << GridLogMessage << nBad << " / " << nbasis << " " << label
+              << " basis vectors hit a degenerate (near-zero) block during Gramm-Schmidt"
+              << std::endl;
 }
 
 // Runs the Mpc^dag Mpc residual check on block-promoted coarse
@@ -273,7 +282,6 @@ int main(int argc, char *argv[])
 {
     std::string  ens       = "64I";
     bool         orthogonalise  = false; // matches production's default (par.CGl.1500.xml: orthogonalise=false)
-    bool         scanDuplicates = false; // O(n^2) whole-vector duplicate scan over the fine basis, see scanForDuplicateBasisVectors()
     std::string  gaugeFile = "/lustre/orion/phy157/world-shared/jhilde/k2pipipbc/main_64I/configs/ckpoint_lat.1500";
     std::string  filestem  = "/lustre/orion/phy157/scratch/jhilde/64I/converted/vec";
     int          traj      = 1500;
@@ -281,6 +289,7 @@ int main(int argc, char *argv[])
     double       resid     = 1e-5;
     unsigned int Ls        = 12;
     std::string  schurConv = "diagtwo";
+    bool         scanDuplicates = false; // per-block Gramm-Schmidt degeneracy scan over the fine basis, see scanForBlockDegeneracy()
 
     if (GridCmdOptionExists(argv, argv + argc, "--gauge"))
         gaugeFile = GridCmdOptionPayload(argv, argv + argc, "--gauge");
@@ -452,7 +461,9 @@ int main(int argc, char *argv[])
 
         if (scanDuplicates)
         {
-            scanForDuplicateBasisVectors(epack.evec, "fine");
+            typedef iImplScalar<typename LatticeFermionZF::vector_type> SiteComplex;
+            Lattice<SiteComplex> dupScratch(CGrid5dF);
+            scanForBlockDegeneracy(dupScratch, epack.evec, "fine");
         }
 
         epack.readCoarse(filestem, true, traj);
@@ -474,7 +485,9 @@ int main(int argc, char *argv[])
 
         if (scanDuplicates)
         {
-            scanForDuplicateBasisVectors(epack.evec, "fine");
+            typedef iImplScalar<typename LatticeFermionF::vector_type> SiteComplex;
+            Lattice<SiteComplex> dupScratch(CGrid5dF);
+            scanForBlockDegeneracy(dupScratch, epack.evec, "fine");
         }
 
         epack.readCoarse(filestem, true, traj);
