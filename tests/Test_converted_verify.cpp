@@ -76,7 +76,7 @@
  *   ./Test_converted_verify --grid 64.64.64.128 --mpi 4.4.4.4 \
  *       --gauge /path/to/ckpoint_lat \
  *       --filestem /path/to/converted/vec \
- *       --traj 1500 --nCheck 5 --resid 1e-3 --ens 64I [--orthogonalise]
+ *       --traj 1500 --nCheck 5 --resid 1e-3 --ens 64I [--orthogonalise] [--scanDuplicates]
  *
  * A vector that's intact should reconstruct an eigenvalue close to the
  * stored one and pass the residual target; loosen/tighten --resid to
@@ -101,6 +101,20 @@
  * generation or conversion), not an action-parameter mismatch, since
  * re-orthogonalising is a purely geometric fix-up that can't correct for a
  * wrong physical operator.
+ *
+ * --scanDuplicates: --orthogonalise coming back with exact NaN (not just a
+ * large residual) points at 0/0 in blockNormalise() -- which only happens
+ * when a fine basis vector's component orthogonal to all earlier ones is
+ * exactly zero in some block, i.e. two basis vectors are (at least
+ * partially) linearly dependent. This runs scanForDuplicateBasisVectors()
+ * first: an O(n^2) whole-lattice pairwise overlap scan (norm2/innerProduct
+ * only, no block-level machinery) over the fine basis, printing any pair
+ * whose normalised overlap |<u|v>|^2/(|u|^2|v|^2) is within 1e-6 of 1 --
+ * i.e. any two fine "basis" vectors that are actually (near-)duplicates of
+ * each other. n(n-1)/2 pairs (~19900 for 64I's 200, ~79800 for 48I's 400),
+ * each a global reduction over the full fine lattice, so this is
+ * significantly slower than the main check -- expect it to dominate the
+ * runtime when enabled.
  */
 #include <Grid/Grid.h>
 #include <Grid/algorithms/iterative/ImplicitlyRestartedLanczos.h>
@@ -115,6 +129,73 @@ using namespace Hadrons;
 // scratch space.
 template <typename vtype>
 using iImplScalar = iScalar<iScalar<iScalar<vtype>>>;
+
+// Cheap O(n^2) whole-vector scan across all pairs of fine basis vectors for
+// near-exact duplicates. A genuine block-orthonormal LCL basis should have
+// no two vectors nearly parallel over the whole lattice; a duplicate pair
+// here is exactly what makes blockOrthogonalise() hit 0/0 in blockNormalise
+// (--orthogonalise's NaN), and is consistent with EvalScan's "50 duplicate
+// pairs out of 200" on the fine section's eval[] field -- this checks the
+// actual vector *data*, not eigenvalue metadata, using only whole-lattice
+// norm2/innerProduct (no new block-level machinery, to keep this safe to
+// run without a local build to check against). Flags pairs whose global
+// normalised overlap |<u|v>|^2/(|u|^2|v|^2) is within 1e-6 of 1.
+template <typename Field>
+void scanForDuplicateBasisVectors(std::vector<Field> &subspace, const std::string &label)
+{
+    unsigned int        n = subspace.size();
+    std::vector<RealD>  normSq(n);
+
+    for (unsigned int i = 0; i < n; ++i)
+    {
+        normSq[i] = norm2(subspace[i]);
+    }
+
+    const RealD  threshold = 1. - 1e-6; // flag pairs closer to parallel than this
+    unsigned int nPairs = 0, nFlagged = 0;
+
+    std::cout << GridLogMessage << "Scanning " << n << " " << label
+              << " basis vectors for near-duplicates (" << (n * (n - 1)) / 2
+              << " pairs)..." << std::endl;
+
+    for (unsigned int u = 0; u < n; ++u)
+    {
+        for (unsigned int v = u + 1; v < n; ++v)
+        {
+            ++nPairs;
+
+            RealD denom = normSq[u] * normSq[v];
+            if (denom == 0.)
+            {
+                continue;
+            }
+
+            ComplexD ip      = innerProduct(subspace[u], subspace[v]);
+            RealD    ipMagSq = ip.real() * ip.real() + ip.imag() * ip.imag();
+            RealD    overlap = ipMagSq / denom;
+
+            if (overlap > threshold)
+            {
+                ++nFlagged;
+
+                // Confirm/quantify with a direct difference: sign/phase of a
+                // genuine duplicate could come back +evec or -evec, so try both.
+                RealD diffNorm = std::min(norm2(subspace[u] - subspace[v]),
+                                           norm2(subspace[u] + subspace[v]));
+                RealD relDiff  = diffNorm / (normSq[u] + normSq[v]);
+
+                std::cout << GridLogMessage << "  DUPLICATE CANDIDATE: " << label
+                          << " evec " << u << " vs " << v
+                          << ": global overlap |<u|v>|^2/(|u|^2|v|^2) = " << overlap
+                          << ", relative difference = " << relDiff << std::endl;
+            }
+        }
+    }
+
+    std::cout << GridLogMessage << nFlagged << " / " << nPairs << " " << label
+              << " basis-vector pairs flagged as near-duplicates (overlap > "
+              << threshold << ")" << std::endl;
+}
 
 // Runs the Mpc^dag Mpc residual check on block-promoted coarse
 // eigenvectors, for a given Schur convention (SchurOp is
@@ -196,7 +277,8 @@ int main(int argc, char *argv[])
     unsigned int nCheck    = 5; // number of coarse eigenvectors to promote and check
     double       resid     = 1e-3;
     std::string  ens       = "64I";
-    bool         orthogonalise = false; // matches production's default (par.CGl.1500.xml: orthogonalise=false)
+    bool         orthogonalise  = false; // matches production's default (par.CGl.1500.xml: orthogonalise=false)
+    bool         scanDuplicates = false; // O(n^2) whole-vector duplicate scan over the fine basis, see scanForDuplicateBasisVectors()
 
     if (GridCmdOptionExists(argv, argv + argc, "--gauge"))
         gaugeFile = GridCmdOptionPayload(argv, argv + argc, "--gauge");
@@ -212,13 +294,15 @@ int main(int argc, char *argv[])
         ens = GridCmdOptionPayload(argv, argv + argc, "--ens");
     if (GridCmdOptionExists(argv, argv + argc, "--orthogonalise"))
         orthogonalise = true;
+    if (GridCmdOptionExists(argv, argv + argc, "--scanDuplicates"))
+        scanDuplicates = true;
 
     if (gaugeFile.empty() || filestem.empty() || (ens != "64I" && ens != "48I"))
     {
         std::cerr << "Usage: " << argv[0]
                   << " --grid X.Y.Z.T --mpi x.y.z.t"
                   << " --gauge <config> --filestem <converter filestem, no _fine/_coarse suffix>"
-                  << " [--traj N] [--nCheck N] [--resid X] [--ens 64I|48I] [--orthogonalise]" << std::endl;
+                  << " [--traj N] [--nCheck N] [--resid X] [--ens 64I|48I] [--orthogonalise] [--scanDuplicates]" << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -349,6 +433,12 @@ int main(int argc, char *argv[])
 
         Hadrons::CoarseFermionEigenPack<ZFIMPLF, 400> epack(400, nCheck, FrbGridF, CGrid5dF);
         epack.readFine(filestem, true, traj);
+
+        if (scanDuplicates)
+        {
+            scanForDuplicateBasisVectors(epack.evec, "fine");
+        }
+
         epack.readCoarse(filestem, true, traj);
 
         // 48I is always SchurDiagTwoOperator (Hadrons' default production convention).
@@ -365,6 +455,12 @@ int main(int argc, char *argv[])
 
         Hadrons::CoarseFermionEigenPack<FIMPLF, 200> epack(200, nCheck, FrbGridF, CGrid5dF);
         epack.readFine(filestem, true, traj);
+
+        if (scanDuplicates)
+        {
+            scanForDuplicateBasisVectors(epack.evec, "fine");
+        }
+
         epack.readCoarse(filestem, true, traj);
 
         // 64I is always SchurDiagOneOperator (matches GPT's schur_complement_one).
