@@ -501,7 +501,12 @@ int main(int argc, char *argv[])
             std::cout << GridLogMessage << "--nFine " << nFine << ": reading only the first "
                       << nFine << " fine basis vectors from disk (skipping " << nFine << ".."
                       << (epack.evec.size() - 1) << ") and zeroing the rest" << std::endl;
-            epack.read(filestem + "_fine", true, 0, nFine, traj);
+            // CoarseEigenPack::read(ki,kf) unconditionally throws (see
+            // Hadrons::CoarseEigenPack in EigenPack.hpp) -- the partial-read
+            // path only exists on the base EigenPack<FineF,FineFIo>, so it
+            // has to be called explicitly qualified to bypass the virtual
+            // override that disables it at the CoarseEigenPack level.
+            epack.EigenPack<LatticeFermionZF>::read(filestem + "_fine", true, 0, nFine, traj);
             for (unsigned int v = nFine; v < epack.evec.size(); ++v)
             {
                 epack.evec[v] = Zero();
@@ -540,7 +545,12 @@ int main(int argc, char *argv[])
             std::cout << GridLogMessage << "--nFine " << nFine << ": reading only the first "
                       << nFine << " fine basis vectors from disk (skipping " << nFine << ".."
                       << (epack.evec.size() - 1) << ") and zeroing the rest" << std::endl;
-            epack.read(filestem + "_fine", true, 0, nFine, traj);
+            // CoarseEigenPack::read(ki,kf) unconditionally throws (see
+            // Hadrons::CoarseEigenPack in EigenPack.hpp) -- the partial-read
+            // path only exists on the base EigenPack<FineF,FineFIo>, so it
+            // has to be called explicitly qualified to bypass the virtual
+            // override that disables it at the CoarseEigenPack level.
+            epack.EigenPack<LatticeFermionF>::read(filestem + "_fine", true, 0, nFine, traj);
             for (unsigned int v = nFine; v < epack.evec.size(); ++v)
             {
                 epack.evec[v] = Zero();
