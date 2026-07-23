@@ -114,12 +114,16 @@
  * for any vector that has at least one. Same O(n^2) cost as one
  * blockOrthogonalise() pass (not an additional sweep on top).
  *
- * --nFine N: zeroes fine basis vectors N..sizeFine-1 in place before
+ * --nFine N: reads only the first N fine basis vectors from disk (via
+ * EigenPack::read()'s ki/kf-ranged overload -- for multi-file layouts this
+ * opens only N of the per-vector files, for single-file it stops reading
+ * after N elements) and zeroes vectors N..sizeFine-1 in place before
  * blockPromote/checkVectors, so reconstruction only draws on the first N
- * fine vectors (blockPromote's loop bound is the coarse field's compile-time
- * nbasis, not Basis.size(), so vectors can't just be dropped from the
- * std::vector -- zeroing is the way to exclude a vector's contribution
- * while keeping the array sizes blockPromote expects). Motivation: fine
+ * fine vectors. The zeroing (not just skipping the read) is required:
+ * blockPromote's loop bound is the coarse field's compile-time nbasis, not
+ * Basis.size(), so vectors can't just be dropped from the std::vector, and
+ * resize() doesn't zero-initialise a Lattice -- unread entries would
+ * otherwise be uninitialised memory, not real zeros. Motivation: fine
  * vectors are read from disk as fp32 up to n_basis_fp32 and FP16-compressed
  * (custom shared-exponent scheme, see Utils/FP16.cpp) from there on -- for
  * 64I that boundary is vector 50, which is also where the one confirmed
@@ -491,25 +495,28 @@ int main(int argc, char *argv[])
                              mass, M5, omega, b, c, implParams);
 
         Hadrons::CoarseFermionEigenPack<ZFIMPLF, 400> epack(400, nCheck, FrbGridF, CGrid5dF);
-        epack.readFine(filestem, true, traj);
+
+        if (nFine > 0 && nFine < epack.evec.size())
+        {
+            std::cout << GridLogMessage << "--nFine " << nFine << ": reading only the first "
+                      << nFine << " fine basis vectors from disk (skipping " << nFine << ".."
+                      << (epack.evec.size() - 1) << ") and zeroing the rest" << std::endl;
+            epack.read(filestem + "_fine", true, 0, nFine, traj);
+            for (unsigned int v = nFine; v < epack.evec.size(); ++v)
+            {
+                epack.evec[v] = Zero();
+            }
+        }
+        else
+        {
+            epack.readFine(filestem, true, traj);
+        }
 
         if (scanDuplicates)
         {
             typedef iImplScalar<typename LatticeFermionZF::vector_type> SiteComplex;
             Lattice<SiteComplex> dupScratch(CGrid5dF);
             scanForBlockDegeneracy(dupScratch, epack.evec, "fine");
-        }
-
-        if (nFine > 0 && nFine < epack.evec.size())
-        {
-            std::cout << GridLogMessage << "--nFine " << nFine << ": zeroing fine basis vectors "
-                      << nFine << ".." << (epack.evec.size() - 1)
-                      << " -- reconstruction will only use the first " << nFine << " fine vectors"
-                      << std::endl;
-            for (unsigned int v = nFine; v < epack.evec.size(); ++v)
-            {
-                epack.evec[v] = Zero();
-            }
         }
 
         epack.readCoarse(filestem, true, traj);
@@ -527,25 +534,28 @@ int main(int argc, char *argv[])
                             mass, M5, b, c, implParams);
 
         Hadrons::CoarseFermionEigenPack<FIMPLF, 200> epack(200, nCheck, FrbGridF, CGrid5dF);
-        epack.readFine(filestem, true, traj);
+
+        if (nFine > 0 && nFine < epack.evec.size())
+        {
+            std::cout << GridLogMessage << "--nFine " << nFine << ": reading only the first "
+                      << nFine << " fine basis vectors from disk (skipping " << nFine << ".."
+                      << (epack.evec.size() - 1) << ") and zeroing the rest" << std::endl;
+            epack.read(filestem + "_fine", true, 0, nFine, traj);
+            for (unsigned int v = nFine; v < epack.evec.size(); ++v)
+            {
+                epack.evec[v] = Zero();
+            }
+        }
+        else
+        {
+            epack.readFine(filestem, true, traj);
+        }
 
         if (scanDuplicates)
         {
             typedef iImplScalar<typename LatticeFermionF::vector_type> SiteComplex;
             Lattice<SiteComplex> dupScratch(CGrid5dF);
             scanForBlockDegeneracy(dupScratch, epack.evec, "fine");
-        }
-
-        if (nFine > 0 && nFine < epack.evec.size())
-        {
-            std::cout << GridLogMessage << "--nFine " << nFine << ": zeroing fine basis vectors "
-                      << nFine << ".." << (epack.evec.size() - 1)
-                      << " -- reconstruction will only use the first " << nFine << " fine vectors"
-                      << std::endl;
-            for (unsigned int v = nFine; v < epack.evec.size(); ++v)
-            {
-                epack.evec[v] = Zero();
-            }
         }
 
         epack.readCoarse(filestem, true, traj);
