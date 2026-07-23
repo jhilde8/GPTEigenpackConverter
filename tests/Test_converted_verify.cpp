@@ -76,7 +76,7 @@
  *   ./Test_converted_verify --grid 64.64.64.128 --mpi 4.4.4.4 \
  *       --gauge /path/to/ckpoint_lat \
  *       --filestem /path/to/converted/vec \
- *       --traj 1500 --nCheck 5 --resid 1e-3 --ens 64I [--orthogonalise] [--scanDuplicates]
+ *       --traj 1500 --nCheck 5 --resid 1e-3 --ens 64I [--orthogonalise] [--scanDuplicates] [--nFine N]
  *
  * A vector that's intact should reconstruct an eigenvalue close to the
  * stored one and pass the residual target; loosen/tighten --resid to
@@ -113,6 +113,22 @@
  * (near) zero, and reporting the vector index plus degenerate-block count
  * for any vector that has at least one. Same O(n^2) cost as one
  * blockOrthogonalise() pass (not an additional sweep on top).
+ *
+ * --nFine N: zeroes fine basis vectors N..sizeFine-1 in place before
+ * blockPromote/checkVectors, so reconstruction only draws on the first N
+ * fine vectors (blockPromote's loop bound is the coarse field's compile-time
+ * nbasis, not Basis.size(), so vectors can't just be dropped from the
+ * std::vector -- zeroing is the way to exclude a vector's contribution
+ * while keeping the array sizes blockPromote expects). Motivation: fine
+ * vectors are read from disk as fp32 up to n_basis_fp32 and FP16-compressed
+ * (custom shared-exponent scheme, see Utils/FP16.cpp) from there on -- for
+ * 64I that boundary is vector 50, which is also where the one confirmed
+ * fine-basis defect found so far sits. Comparing --nFine 50 (fp32-only)
+ * against the full default reconstruction isolates whether the FP16 decode
+ * path itself is degrading the basis broadly (not just the one exact-zero
+ * block already found), independent of any actual action-parameter
+ * mismatch, since neither the gauge field nor mass/M5/b/c/Ls touch this
+ * code path at all.
  */
 #include <Grid/Grid.h>
 #include <Grid/algorithms/iterative/ImplicitlyRestartedLanczos.h>
@@ -305,6 +321,7 @@ int main(int argc, char *argv[])
     unsigned int Ls        = 12;
     std::string  schurConv = "diagtwo";
     bool         scanDuplicates = false; // per-block Gramm-Schmidt degeneracy scan over the fine basis, see scanForBlockDegeneracy()
+    unsigned int nFine          = 0; // 0 = disabled (use full fine basis); else zero out fine vectors nFine..sizeFine-1 before reconstruction
 
     if (GridCmdOptionExists(argv, argv + argc, "--gauge"))
         gaugeFile = GridCmdOptionPayload(argv, argv + argc, "--gauge");
@@ -322,13 +339,15 @@ int main(int argc, char *argv[])
         orthogonalise = true;
     if (GridCmdOptionExists(argv, argv + argc, "--scanDuplicates"))
         scanDuplicates = true;
+    if (GridCmdOptionExists(argv, argv + argc, "--nFine"))
+        nFine = std::stoi(GridCmdOptionPayload(argv, argv + argc, "--nFine"));
 
     if (gaugeFile.empty() || filestem.empty() || (ens != "64I" && ens != "48I"))
     {
         std::cerr << "Usage: " << argv[0]
                   << " --grid X.Y.Z.T --mpi x.y.z.t"
                   << " --gauge <config> --filestem <converter filestem, no _fine/_coarse suffix>"
-                  << " [--traj N] [--nCheck N] [--resid X] [--ens 64I|48I] [--orthogonalise] [--scanDuplicates]" << std::endl;
+                  << " [--traj N] [--nCheck N] [--resid X] [--ens 64I|48I] [--orthogonalise] [--scanDuplicates] [--nFine N]" << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -481,6 +500,18 @@ int main(int argc, char *argv[])
             scanForBlockDegeneracy(dupScratch, epack.evec, "fine");
         }
 
+        if (nFine > 0 && nFine < epack.evec.size())
+        {
+            std::cout << GridLogMessage << "--nFine " << nFine << ": zeroing fine basis vectors "
+                      << nFine << ".." << (epack.evec.size() - 1)
+                      << " -- reconstruction will only use the first " << nFine << " fine vectors"
+                      << std::endl;
+            for (unsigned int v = nFine; v < epack.evec.size(); ++v)
+            {
+                epack.evec[v] = Zero();
+            }
+        }
+
         epack.readCoarse(filestem, true, traj);
 
         // 48I is always SchurDiagTwoOperator (Hadrons' default production convention).
@@ -503,6 +534,18 @@ int main(int argc, char *argv[])
             typedef iImplScalar<typename LatticeFermionF::vector_type> SiteComplex;
             Lattice<SiteComplex> dupScratch(CGrid5dF);
             scanForBlockDegeneracy(dupScratch, epack.evec, "fine");
+        }
+
+        if (nFine > 0 && nFine < epack.evec.size())
+        {
+            std::cout << GridLogMessage << "--nFine " << nFine << ": zeroing fine basis vectors "
+                      << nFine << ".." << (epack.evec.size() - 1)
+                      << " -- reconstruction will only use the first " << nFine << " fine vectors"
+                      << std::endl;
+            for (unsigned int v = nFine; v < epack.evec.size(); ++v)
+            {
+                epack.evec[v] = Zero();
+            }
         }
 
         epack.readCoarse(filestem, true, traj);
